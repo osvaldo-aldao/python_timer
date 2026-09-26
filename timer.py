@@ -3,10 +3,15 @@ from datetime import datetime
 import pandas as pd
 
 # Font sizes for labels
-letra_current = 72
-letra_time = 90
-letra_time2 = 120
-letra_next = 48
+# letra_current = 90
+# letra_time = 120
+# letra_time2 = 160
+# letra_next = 52
+# space_on_top = 300
+letra_current = 30
+letra_time = 70
+letra_time2 = 100
+letra_next = 24
 space_on_top = 100
 pannic_time = 1  # time in minutes
 
@@ -37,96 +42,133 @@ class SeminarTracker:
         self.next_session_label = tk.Label(self.frame, text="", font=("Courier", letra_next), bg="#020332", fg="white")
         self.next_session_label.pack(pady=(100, 20))  # Padding around next session
 
-        # Bind Ctrl+U to update agenda
-        self.master.bind("<Control-u>", self.update_agenda)
+        # Small status line to confirm agenda reloads
+        self.status_label = tk.Label(self.frame, text="", font=("Courier", 14), bg="#020332", fg="gray")
+        self.status_label.pack(pady=(10, 0))
+        self.status_job = None
+
+        # Bind Ctrl+U (plus Cmd+R and F5 on macOS) to update agenda
+        for key in ("<Control-u>", "<Control-U>", "<Command-r>", "<Command-R>", "<F5>"):
+            self.master.bind(key, self.update_agenda)
+
+        # Take keyboard focus so the shortcuts work without clicking the window first
+        self.master.lift()
+        self.master.focus_force()
 
         self.current_session_index = 0
         self.blinking = False  # Control blinking state
+        self.blink_job = None  # Pending blink callback, so it can be cancelled
 
         self.load_agenda()
-        self.update_session()
+        self.tick()
 
     def load_agenda(self):
-        """Load agenda from Excel file."""
-        self.agenda = pd.read_excel(self.agenda_file)
-        self.agenda['start_time'] = pd.to_datetime(self.agenda['start_time'], format='%H:%M:%S')
-        self.agenda['end_time'] = pd.to_datetime(self.agenda['end_time'], format='%H:%M:%S')
+        """Load agenda from Excel file. Keeps the previous agenda if loading fails."""
+        agenda = pd.read_excel(self.agenda_file)
+        agenda['start_time'] = pd.to_datetime(agenda['start_time'], format='%H:%M:%S')
+        agenda['end_time'] = pd.to_datetime(agenda['end_time'], format='%H:%M:%S')
+        self.agenda = agenda
 
     def update_agenda(self, event=None):
         """Reloads the agenda from the Excel file and resets the session tracker."""
+        try:
+            self.load_agenda()
+        except Exception as e:
+            print(f"Could not reload agenda, keeping the current one: {e}")
+            self.show_status(f"Reload failed: {e}", "orange")
+            return
         self.current_session_index = 0
-        self.load_agenda()
-        self.update_session(force_update=True)
+        self.update_session()
+        self.show_status(f"Agenda reloaded at {datetime.now().strftime('%H:%M:%S')}", "gray")
 
-    def update_session(self, force_update=False):
+    def show_status(self, text, color):
+        """Show a status message for a few seconds."""
+        if self.status_job is not None:
+            self.master.after_cancel(self.status_job)
+        self.status_label.config(text=text, fg=color)
+        self.status_job = self.master.after(4000, lambda: self.status_label.config(text=""))
+
+    def tick(self):
+        """Refresh the display once per second for as long as the app runs."""
+        try:
+            self.update_session()
+        finally:
+            self.master.after(1000, self.tick)
+
+    def update_session(self):
         now = datetime.now()  # Keep the actual time with seconds and microseconds
 
-        if self.current_session_index < len(self.agenda):
-            current_session = self.agenda.iloc[self.current_session_index]
-            next_session = self.agenda.iloc[self.current_session_index + 1] if self.current_session_index + 1 < len(self.agenda) else None
-            
-            # Display start and end times without seconds
-            start_time = current_session['start_time'].strftime('%H:%M')
-            end_time = current_session['end_time'].strftime('%H:%M')
-            session_name = current_session['session_name']
-            speaker_name = current_session['speaker_name']
+        # Skip sessions that have already ended
+        while self.current_session_index < len(self.agenda):
+            end_time_with_date = datetime.combine(now.date(), self.agenda.iloc[self.current_session_index]['end_time'].time())
+            if end_time_with_date > now:
+                break
+            self.current_session_index += 1
 
-            # Update the current session information
-            self.current_session_label.config(text=f"Current: {session_name} by {speaker_name}\nStart: {start_time}, End: {end_time}")
-
-            # Calculate remaining time until the session starts
-            start_time_with_date = datetime.combine(now.date(), current_session['start_time'].time())
-            remaining_time_until_start = start_time_with_date - now
-
-            if remaining_time_until_start.total_seconds() > 0 or force_update:
-                # Display countdown until the session starts
-                minutes, seconds = divmod(int(remaining_time_until_start.total_seconds()), 60)
-                self.current_timer_label.config(text=f"Starts in: {minutes:02}:{seconds:02}")
-
-                # Clear next session label while waiting for current session to start
-                self.next_session_label.config(text="")
-                if not force_update:
-                    self.master.after(1000, self.update_session)
-
-            else:
-                # Session ongoing, calculate remaining time
-                end_time_with_date = datetime.combine(now.date(), current_session['end_time'].time())
-                remaining_time = end_time_with_date - now
-
-                if remaining_time.total_seconds() > 0:
-                    # Update countdown timer with seconds
-                    minutes, seconds = divmod(int(remaining_time.total_seconds()), 60)
-                    self.current_timer_label.config(text=f"{minutes:02}:{seconds:02} remaining")
-
-                    # Start blinking when panic_time is reached
-                    if remaining_time.total_seconds() < 60 * pannic_time:
-                        self.blinking = True
-                        self.blink_text()
-                        self.current_timer_label.config(font=("Courier", letra_time2), fg='yellow')
-                    else:
-                        self.blinking = False
-                        self.current_timer_label.config(font=("Courier", letra_time), fg='red')
-
-                    # Show next session
-                    if next_session is not None:
-                        next_start_time = next_session['start_time'].strftime('%H:%M')
-                        next_end_time = next_session['end_time'].strftime('%H:%M')
-                        next_session_text = f"Next: {next_session['session_name']} by {next_session['speaker_name']}\nStart: {next_start_time}, End: {next_end_time}"
-                        self.next_session_label.config(text=next_session_text)
-                    else:
-                        self.next_session_label.config(text="End of Seminar")
-
-                    if not force_update:
-                        self.master.after(1000, self.update_session)
-                else:
-                    # Move to the next session
-                    self.current_session_index += 1
-                    self.update_session()
-        else:
+        if self.current_session_index >= len(self.agenda):
             # End of the seminar
+            self.set_blinking(False)
             self.current_session_label.config(text="Seminar is over")
             self.current_timer_label.config(text="")
             self.next_session_label.config(text="")
+            return
+
+        current_session = self.agenda.iloc[self.current_session_index]
+        next_session = self.agenda.iloc[self.current_session_index + 1] if self.current_session_index + 1 < len(self.agenda) else None
+
+        # Display start and end times without seconds
+        start_time = current_session['start_time'].strftime('%H:%M')
+        end_time = current_session['end_time'].strftime('%H:%M')
+        session_name = current_session['session_name']
+        speaker_name = current_session['speaker_name']
+
+        # Update the current session information
+        self.current_session_label.config(text=f"Current: {session_name} by {speaker_name}\nStart: {start_time}, End: {end_time}")
+
+        # Calculate remaining time until the session starts
+        start_time_with_date = datetime.combine(now.date(), current_session['start_time'].time())
+        remaining_time_until_start = start_time_with_date - now
+
+        if remaining_time_until_start.total_seconds() > 0:
+            # Display countdown until the session starts
+            self.set_blinking(False)
+            minutes, seconds = divmod(int(remaining_time_until_start.total_seconds()), 60)
+            self.current_timer_label.config(text=f"Starts in: {minutes:02}:{seconds:02}")
+
+            # Clear next session label while waiting for current session to start
+            self.next_session_label.config(text="")
+        else:
+            # Session ongoing, calculate remaining time
+            remaining_time = end_time_with_date - now
+
+            # Update countdown timer with seconds
+            minutes, seconds = divmod(int(remaining_time.total_seconds()), 60)
+            self.current_timer_label.config(text=f"{minutes:02}:{seconds:02} remaining")
+
+            # Blink when panic_time is reached
+            self.set_blinking(remaining_time.total_seconds() < 60 * pannic_time)
+
+            # Show next session
+            if next_session is not None:
+                next_start_time = next_session['start_time'].strftime('%H:%M')
+                next_end_time = next_session['end_time'].strftime('%H:%M')
+                next_session_text = f"Next: {next_session['session_name']} by {next_session['speaker_name']}\nStart: {next_start_time}, End: {next_end_time}"
+                self.next_session_label.config(text=next_session_text)
+            else:
+                self.next_session_label.config(text="End of Seminar")
+
+    def set_blinking(self, on):
+        """Turn panic blinking on or off, starting at most one blink loop."""
+        if on and not self.blinking:
+            self.blinking = True
+            self.current_timer_label.config(font=("Courier", letra_time2), fg='yellow')
+            self.blink_job = self.master.after(500, self.blink_text)
+        elif not on:
+            self.blinking = False
+            if self.blink_job is not None:
+                self.master.after_cancel(self.blink_job)
+                self.blink_job = None
+            self.current_timer_label.config(font=("Courier", letra_time), fg='red')
 
     def blink_text(self):
         if self.blinking:
@@ -134,7 +176,7 @@ class SeminarTracker:
             current_color = self.current_timer_label.cget("fg")
             new_color = "yellow" if current_color == "red" else "red"
             self.current_timer_label.config(fg=new_color)
-            self.master.after(500, self.blink_text)
+            self.blink_job = self.master.after(500, self.blink_text)
 
 
 # Load the agenda CSV and start the application
