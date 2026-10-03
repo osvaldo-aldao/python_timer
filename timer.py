@@ -60,6 +60,12 @@ class SeminarTracker:
         self.status_label.pack(pady=(10, 0))
         self.status_job = None
 
+        # Wrap long lines so the text never gets wider than the screen
+        wrap_width = self.master.winfo_screenwidth() - 100
+        for label in (self.current_session_label, self.current_timer_label,
+                      self.next_session_label, self.status_label):
+            label.config(wraplength=wrap_width, justify="center")
+
         # Bind Ctrl+U (plus Cmd+R and F5 on macOS) to update agenda
         for key in ("<Control-u>", "<Control-U>", "<Command-r>", "<Command-R>", "<F5>"):
             self.master.bind(key, self.update_agenda)
