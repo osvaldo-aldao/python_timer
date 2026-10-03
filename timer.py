@@ -1,78 +1,146 @@
+import json
+import sys
 import tkinter as tk
 import tkinter.font as tkfont
+from tkinter import filedialog, messagebox
 from datetime import datetime
+from pathlib import Path
 import pandas as pd
 
-# Font sizes for labels
-# letra_current = 90
-# letra_time = 120
-# letra_time2 = 160
-# letra_next = 52
-# space_on_top = 300
-# Change font_scale to fit the screen (e.g. 0.8 for a laptop, 3 for a big display).
-# At runtime: Cmd/Ctrl + and Cmd/Ctrl - to resize, Cmd/Ctrl 0 to go back to font_scale.
+# Keyboard shortcuts (same on Mac and PC):
+#   + / -      timer bigger / smaller
+#   Up / Down  agenda bigger / smaller
+#   0          reset both sizes to font_scale and agenda_scale below
+#   F5, Ctrl R reload the agenda file
+#   Ctrl O     open a different agenda file
+#
+# Default font scales to fit the screen (e.g. 0.8 for a laptop, 3 for a big display).
+# The sizes you pick are saved to timer_settings.json and reused next time.
+#
+# Agenda file: `python timer.py my_agenda.xlsx`, or start without a file name to pick one
+# (the last one used is preselected; cancel to use agenda.xlsx next to timer.py).
 font_scale = 1.0
+agenda_scale = 1.0
+settings_file = Path(__file__).with_name("timer_settings.json")
+default_agenda_file = Path(__file__).with_name("agenda.xlsx")
+
+# Font sizes at scale 1.0
 letra_current = 30
 letra_time = 70
 letra_time2 = 100
-letra_next = 24
 letra_status = 14
-space_on_top = 100
-pannic_time = 1  # time in minutes
+letra_agenda = 16
+
+# Shortcut list printed in the terminal at start
+shortcuts = (
+    ("Action", "Keys (Mac and PC)"),
+    ("Timer bigger / smaller", "+ / −: main keyboard (= also works) or numeric keypad"),
+    ("Agenda bigger / smaller", "↑ / ↓"),
+    ("Reset both sizes", "0"),
+    ("Reload agenda", "F5 or Ctrl R (also Cmd R on the Mac)"),
+    ("Open another agenda", "Ctrl O (also Cmd O on the Mac)"),
+)
+pannic_time = 2  # time in minutes
+
+# Colors
+bg_color = "#020332"
+agenda_header_color = "#8a8fd1"
+agenda_past_color = "#5a5e8f"
+agenda_current_bg = "#1f2a7a"
+divider_color = "#2a2c6b"
+
 
 class SeminarTracker:
-    def __init__(self, master, agenda_file):
+    def __init__(self, master, agenda_file=None):
         self.master = master
-        self.agenda_file = agenda_file
+        self.settings = self.load_settings()
         self.master.title("Enea Tech Summit Session Tracker")
 
         # Set background color for the main window
-        self.master.config(bg="#020332")  # Change to your desired color
+        self.master.config(bg=bg_color)
 
-        # Create a frame to hold the content and center it vertically
-        self.frame = tk.Frame(master, bg="#020332")
-        self.frame.pack(expand=True)  # This allows the frame to expand and fill the space
-        
-        # Make the window as wide as possible and minimum height
+        # Start with the window filling the screen
+        self.master.geometry(f"{master.winfo_screenwidth()}x{master.winfo_screenheight()}+0+0")
         #self.master.attributes('-fullscreen', True)  # Fullscreen mode
         #self.master.overrideredirect(True)  # Removes the title bar for a cleaner look
 
+        # Show the window before asking for the agenda, so the picker appears in front of it
+        if not agenda_file:
+            self.master.update()
+            self.master.lift()
+            self.master.focus_force()
+            agenda_file = self.ask_agenda_file() or default_agenda_file
+        self.agenda_file = agenda_file
+
         # Shared fonts, so resizing them updates every label at once
-        self.scale = font_scale
+        self.scale = self.setting_number("font_scale", font_scale)
+        self.agenda_scale = self.setting_number("agenda_scale", agenda_scale)
         self.font_current = tkfont.Font(family="Courier")
         self.font_time = tkfont.Font(family="Courier")
         self.font_time2 = tkfont.Font(family="Courier")
-        self.font_next = tkfont.Font(family="Courier")
         self.font_status = tkfont.Font(family="Courier")
+        self.font_agenda = tkfont.Font(family="Courier")
+        self.font_agenda_bold = tkfont.Font(family="Courier", weight="bold")
 
-        # Define labels for current and next session
-        self.current_session_label = tk.Label(self.frame, text="", font=self.font_current, bg="#020332", fg="white")
+        # Split the window: timer on the left 2/3, agenda on the right 1/3
+        self.master.grid_rowconfigure(0, weight=1)
+        self.master.grid_columnconfigure(0, weight=2, uniform="split")
+        self.master.grid_columnconfigure(2, weight=1, uniform="split")
+
+        timer_side = tk.Frame(master, bg=bg_color)
+        timer_side.grid(row=0, column=0, sticky="nsew")
+        tk.Frame(master, bg=divider_color, width=2).grid(row=0, column=1, sticky="ns")
+        agenda_side = tk.Frame(master, bg=bg_color)
+        agenda_side.grid(row=0, column=2, sticky="nsew")
+
+        # Timer side: a frame centered vertically holding the current session and timer
+        self.frame = tk.Frame(timer_side, bg=bg_color)
+        self.frame.place(relx=0.5, rely=0.5, anchor="center")
+        timer_side.bind("<Configure>", lambda e: self.current_session_label.config(wraplength=e.width - 40))
+
+        self.current_session_label = tk.Label(self.frame, text="", font=self.font_current, bg=bg_color, fg="white")
         self.current_session_label.pack(pady=(20, 20))  # Padding around current session
 
-        self.current_timer_label = tk.Label(self.frame, text="", font=self.font_time, fg='red', bg="#020332")
+        self.current_timer_label = tk.Label(self.frame, text="", font=self.font_time, fg='red', bg=bg_color)
         self.current_timer_label.pack(pady=10)  # Padding around timer
 
-        self.next_session_label = tk.Label(self.frame, text="", font=self.font_next, bg="#020332", fg="white")
-        self.next_session_label.pack(pady=(space_on_top, 20))  # Padding around next session
-
-        # Small status line to confirm agenda reloads
-        self.status_label = tk.Label(self.frame, text="", font=self.font_status, bg="#020332", fg="gray")
+        # Small status line to confirm agenda reloads and scale changes
+        self.status_label = tk.Label(self.frame, text="", font=self.font_status, bg=bg_color, fg="gray")
         self.status_label.pack(pady=(10, 0))
         self.status_job = None
 
-        # Bind Ctrl+U (plus Cmd+R and F5 on macOS) to update agenda
-        for key in ("<Control-u>", "<Control-U>", "<Command-r>", "<Command-R>", "<F5>"):
+        # Agenda side: a scrollable table that keeps the current session in view
+        self.agenda_canvas = tk.Canvas(agenda_side, bg=bg_color, highlightthickness=0)
+        self.agenda_canvas.pack(fill="both", expand=True, padx=20, pady=20)
+        self.agenda_table = tk.Frame(self.agenda_canvas, bg=bg_color)
+        self.agenda_window = self.agenda_canvas.create_window(0, 0, window=self.agenda_table, anchor="nw")
+        self.agenda_table.bind("<Configure>", lambda e: self.agenda_canvas.config(scrollregion=self.agenda_canvas.bbox("all")))
+        self.agenda_canvas.bind("<Configure>", self.fit_agenda_width)
+        self.agenda_rows = []
+        self.highlighted_index = None
+
+        # Shortcuts that work the same on Mac and PC (Ctrl U and Cmd R / Cmd O kept as extras)
+        modifiers = ("Control", "Command") if sys.platform == "darwin" else ("Control",)
+        for mod in modifiers:
+            for letter in ("r", "R"):
+                self.master.bind(f"<{mod}-{letter}>", self.update_agenda)
+            for letter in ("o", "O"):
+                self.master.bind(f"<{mod}-{letter}>", self.open_agenda)
+        for key in ("<F5>", "<Control-u>", "<Control-U>"):
             self.master.bind(key, self.update_agenda)
 
-        # Bind Cmd/Ctrl + / - / 0 to grow, shrink and reset the font scale
-        for mod in ("Command", "Control"):
-            for key in ("plus", "equal", "KP_Add"):
-                self.master.bind(f"<{mod}-{key}>", lambda e: self.set_scale(self.scale * 1.1))
-            for key in ("minus", "KP_Subtract"):
-                self.master.bind(f"<{mod}-{key}>", lambda e: self.set_scale(self.scale / 1.1))
-            self.master.bind(f"<{mod}-0>", lambda e: self.set_scale(font_scale))
+        # + / - scale the timer, Up / Down scale the agenda, 0 resets both
+        for key in ("plus", "equal", "KP_Add"):
+            self.master.bind(f"<{key}>", lambda e: self.set_scale(self.scale * 1.1))
+        for key in ("minus", "KP_Subtract"):
+            self.master.bind(f"<{key}>", lambda e: self.set_scale(self.scale / 1.1))
+        self.master.bind("<Up>", lambda e: self.set_agenda_scale(self.agenda_scale * 1.1))
+        self.master.bind("<Down>", lambda e: self.set_agenda_scale(self.agenda_scale / 1.1))
+        for key in ("0", "KP_0"):
+            self.master.bind(f"<Key-{key}>", lambda e: self.reset_scales())
 
         self.apply_scale()
+        self.print_shortcuts()
 
         # Take keyboard focus so the shortcuts work without clicking the window first
         self.master.lift()
@@ -82,7 +150,12 @@ class SeminarTracker:
         self.blinking = False  # Control blinking state
         self.blink_job = None  # Pending blink callback, so it can be cancelled
 
-        self.load_agenda()
+        try:
+            self.load_agenda()
+        except Exception as e:
+            messagebox.showerror("Agenda", f"Could not load {self.agenda_file}:\n{e}")
+            raise SystemExit(1)
+        self.save_settings()
         self.tick()
 
     def load_agenda(self):
@@ -90,32 +163,166 @@ class SeminarTracker:
         agenda = pd.read_excel(self.agenda_file)
         agenda['start_time'] = pd.to_datetime(agenda['start_time'], format='%H:%M:%S')
         agenda['end_time'] = pd.to_datetime(agenda['end_time'], format='%H:%M:%S')
+        for column in ('session_name', 'speaker_name'):
+            agenda[column] = agenda[column].fillna("").astype(str).str.strip()
         self.agenda = agenda
+        self.build_agenda_table()
+
+    def build_agenda_table(self):
+        """Create one row per session with start time, topic and speaker."""
+        for widget in self.agenda_table.winfo_children():
+            widget.destroy()
+        self.agenda_rows = []
+        self.highlighted_index = None
+
+        for column, title in enumerate(("Start", "Topic", "Speaker")):
+            tk.Label(self.agenda_table, text=title, font=self.font_agenda_bold, bg=bg_color,
+                     fg=agenda_header_color, anchor="w").grid(row=0, column=column, sticky="ew", padx=6, pady=(0, 8))
+
+        for i, session in enumerate(self.agenda.itertuples()):
+            cells = [tk.Label(self.agenda_table, text=text, font=self.font_agenda, bg=bg_color, fg="white",
+                              anchor="w", justify="left")
+                     for text in (session.start_time.strftime('%H:%M'), session.session_name, session.speaker_name)]
+            for column, cell in enumerate(cells):
+                cell.grid(row=i + 1, column=column, sticky="nsew", padx=6, pady=2, ipady=2)
+            self.agenda_rows.append(cells)
+
+        self.agenda_table.grid_columnconfigure(1, weight=1)
+        self.agenda_table.grid_columnconfigure(2, weight=1)
+        self.fit_agenda_width()
+
+    def fit_agenda_width(self, event=None):
+        """Make the table as wide as the agenda panel, wrapping long topics and speakers."""
+        width = self.agenda_canvas.winfo_width()
+        if width <= 1:
+            return
+        self.agenda_canvas.itemconfigure(self.agenda_window, width=width)
+        time_width = self.font_agenda.measure("00:00") + 24
+        text_width = max(50, (width - time_width) // 2 - 16)
+        for cells in self.agenda_rows:
+            cells[1].config(wraplength=text_width)
+            cells[2].config(wraplength=text_width)
+
+    def highlight_agenda(self):
+        """Grey out finished sessions, highlight the current one and keep it in view."""
+        if self.highlighted_index == self.current_session_index:
+            return
+        self.highlighted_index = self.current_session_index
+
+        for i, cells in enumerate(self.agenda_rows):
+            if i < self.current_session_index:
+                style = dict(fg=agenda_past_color, bg=bg_color, font=self.font_agenda)
+            elif i == self.current_session_index:
+                style = dict(fg="white", bg=agenda_current_bg, font=self.font_agenda_bold)
+            else:
+                style = dict(fg="white", bg=bg_color, font=self.font_agenda)
+            for cell in cells:
+                cell.config(**style)
+
+        self.scroll_agenda_to_current()
+
+    def scroll_agenda_to_current(self):
+        """Scroll so the current session is near the top, with the previous one still visible."""
+        self.master.update_idletasks()
+        table_height = self.agenda_table.winfo_height()
+        if table_height <= self.agenda_canvas.winfo_height() or not self.agenda_rows:
+            self.agenda_canvas.yview_moveto(0)
+            return
+        row = min(max(self.current_session_index - 1, 0), len(self.agenda_rows) - 1)
+        self.agenda_canvas.yview_moveto(self.agenda_rows[row][0].winfo_y() / table_height)
+
+    def ask_agenda_file(self):
+        """Let the user pick an agenda file, starting from the last one used.
+
+        No parent window on purpose: on macOS that would attach the picker to the window
+        as a sheet that can't be moved and can end up partly off-screen.
+        """
+        last = Path(self.settings.get("agenda_file") or default_agenda_file).expanduser().resolve()
+        return filedialog.askopenfilename(
+            title="Choose the agenda file",
+            initialdir=last.parent if last.parent.is_dir() else Path.cwd(), initialfile=last.name,
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*")])
+
+    def open_agenda(self, event=None):
+        """Switch to a different agenda file, keeping the current one if it can't be loaded."""
+        path = self.ask_agenda_file()
+        if not path:
+            return
+        previous = self.agenda_file
+        self.agenda_file = path
+        if self.update_agenda():
+            self.save_settings()
+        else:
+            self.agenda_file = previous
 
     def update_agenda(self, event=None):
         """Reloads the agenda from the Excel file and resets the session tracker."""
         try:
             self.load_agenda()
         except Exception as e:
-            print(f"Could not reload agenda, keeping the current one: {e}")
-            self.show_status(f"Reload failed: {e}", "orange")
-            return
+            print(f"Could not load agenda, keeping the current one: {e}")
+            self.show_status(f"Loading {Path(self.agenda_file).name} failed: {e}", "orange")
+            return False
         self.current_session_index = 0
         self.update_session()
-        self.show_status(f"Agenda reloaded at {datetime.now().strftime('%H:%M:%S')}", "gray")
+        self.show_status(f"{Path(self.agenda_file).name} loaded at {datetime.now().strftime('%H:%M:%S')}", "gray")
+        return True
 
     def apply_scale(self):
-        """Resize all fonts and spacing according to the current scale."""
+        """Resize all fonts according to the current timer and agenda scales."""
         for font, size in ((self.font_current, letra_current), (self.font_time, letra_time),
-                           (self.font_time2, letra_time2), (self.font_next, letra_next),
-                           (self.font_status, letra_status)):
+                           (self.font_time2, letra_time2), (self.font_status, letra_status)):
             font.configure(size=max(1, round(size * self.scale)))
-        self.next_session_label.pack_configure(pady=(round(space_on_top * self.scale), 20))
+        for font in (self.font_agenda, self.font_agenda_bold):
+            font.configure(size=max(1, round(letra_agenda * self.agenda_scale)))
+
+    def print_shortcuts(self):
+        """Print the keyboard shortcuts in the terminal."""
+        width = max(len(action) for action, _ in shortcuts) + 3
+        print("\n".join(f"{action:<{width}}{keys}" for action, keys in shortcuts), flush=True)
+
+    def load_settings(self):
+        """Read the saved settings, or nothing if there is no valid settings file."""
+        try:
+            settings = json.loads(settings_file.read_text())
+        except (OSError, ValueError):
+            return {}
+        return settings if isinstance(settings, dict) else {}
+
+    def setting_number(self, key, default):
+        try:
+            return float(self.settings[key])
+        except (KeyError, ValueError, TypeError):
+            return default
+
+    def save_settings(self):
+        """Remember the font scales and agenda file for the next start."""
+        self.settings = {"font_scale": round(self.scale, 3),
+                         "agenda_scale": round(self.agenda_scale, 3),
+                         "agenda_file": str(Path(self.agenda_file).resolve())}
+        try:
+            settings_file.write_text(json.dumps(self.settings, indent=2))
+        except OSError as e:
+            print(f"Could not save settings: {e}")
 
     def set_scale(self, scale):
         self.scale = min(5.0, max(0.3, scale))
         self.apply_scale()
-        self.show_status(f"Font scale: {self.scale:.2f}", "gray")
+        self.save_settings()
+        self.show_status(f"Timer scale: {self.scale:.2f}", "gray")
+
+    def reset_scales(self):
+        self.set_scale(font_scale)
+        self.set_agenda_scale(agenda_scale)
+        self.show_status("Sizes reset", "gray")
+
+    def set_agenda_scale(self, scale):
+        self.agenda_scale = min(5.0, max(0.3, scale))
+        self.apply_scale()
+        self.save_settings()
+        self.fit_agenda_width()
+        self.scroll_agenda_to_current()
+        self.show_status(f"Agenda scale: {self.agenda_scale:.2f}", "gray")
 
     def show_status(self, text, color):
         """Show a status message for a few seconds."""
@@ -141,16 +348,16 @@ class SeminarTracker:
                 break
             self.current_session_index += 1
 
+        self.highlight_agenda()
+
         if self.current_session_index >= len(self.agenda):
             # End of the seminar
             self.set_blinking(False)
             self.current_session_label.config(text="Seminar is over")
             self.current_timer_label.config(text="")
-            self.next_session_label.config(text="")
             return
 
         current_session = self.agenda.iloc[self.current_session_index]
-        next_session = self.agenda.iloc[self.current_session_index + 1] if self.current_session_index + 1 < len(self.agenda) else None
 
         # Display start and end times without seconds
         start_time = current_session['start_time'].strftime('%H:%M')
@@ -159,7 +366,7 @@ class SeminarTracker:
         speaker_name = current_session['speaker_name']
 
         # Update the current session information
-        self.current_session_label.config(text=f"Current: {session_name} by {speaker_name}\nStart: {start_time}, End: {end_time}")
+        self.current_session_label.config(text=f"{session_name} by {speaker_name}\n{start_time} - {end_time}")
 
         # Calculate remaining time until the session starts
         start_time_with_date = datetime.combine(now.date(), current_session['start_time'].time())
@@ -170,9 +377,6 @@ class SeminarTracker:
             self.set_blinking(False)
             minutes, seconds = divmod(int(remaining_time_until_start.total_seconds()), 60)
             self.current_timer_label.config(text=f"Starts in: {minutes:02}:{seconds:02}")
-
-            # Clear next session label while waiting for current session to start
-            self.next_session_label.config(text="")
         else:
             # Session ongoing, calculate remaining time
             remaining_time = end_time_with_date - now
@@ -183,15 +387,6 @@ class SeminarTracker:
 
             # Blink when panic_time is reached
             self.set_blinking(remaining_time.total_seconds() < 60 * pannic_time)
-
-            # Show next session
-            if next_session is not None:
-                next_start_time = next_session['start_time'].strftime('%H:%M')
-                next_end_time = next_session['end_time'].strftime('%H:%M')
-                next_session_text = f"Next: {next_session['session_name']} by {next_session['speaker_name']}\nStart: {next_start_time}, End: {next_end_time}"
-                self.next_session_label.config(text=next_session_text)
-            else:
-                self.next_session_label.config(text="End of Seminar")
 
     def set_blinking(self, on):
         """Turn panic blinking on or off, starting at most one blink loop."""
@@ -215,8 +410,8 @@ class SeminarTracker:
             self.blink_job = self.master.after(500, self.blink_text)
 
 
-# Load the agenda CSV and start the application
+# Load the agenda file and start the application
 if __name__ == "__main__":
     root = tk.Tk()
-    app = SeminarTracker(root, "agenda.xlsx")  # Replace with your actual file path
+    app = SeminarTracker(root, sys.argv[1] if len(sys.argv) > 1 else None)
     root.mainloop()
