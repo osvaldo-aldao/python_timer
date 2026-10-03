@@ -1,4 +1,5 @@
 import tkinter as tk
+import tkinter.font as tkfont
 from datetime import datetime
 import pandas as pd
 
@@ -8,10 +9,14 @@ import pandas as pd
 # letra_time2 = 160
 # letra_next = 52
 # space_on_top = 300
+# Change font_scale to fit the screen (e.g. 0.8 for a laptop, 3 for a big display).
+# At runtime: Cmd/Ctrl + and Cmd/Ctrl - to resize, Cmd/Ctrl 0 to go back to font_scale.
+font_scale = 1.0
 letra_current = 30
 letra_time = 70
 letra_time2 = 100
 letra_next = 24
+letra_status = 14
 space_on_top = 100
 pannic_time = 1  # time in minutes
 
@@ -32,24 +37,42 @@ class SeminarTracker:
         #self.master.attributes('-fullscreen', True)  # Fullscreen mode
         #self.master.overrideredirect(True)  # Removes the title bar for a cleaner look
 
+        # Shared fonts, so resizing them updates every label at once
+        self.scale = font_scale
+        self.font_current = tkfont.Font(family="Courier")
+        self.font_time = tkfont.Font(family="Courier")
+        self.font_time2 = tkfont.Font(family="Courier")
+        self.font_next = tkfont.Font(family="Courier")
+        self.font_status = tkfont.Font(family="Courier")
+
         # Define labels for current and next session
-        self.current_session_label = tk.Label(self.frame, text="", font=("Courier", letra_current), bg="#020332", fg="white")
+        self.current_session_label = tk.Label(self.frame, text="", font=self.font_current, bg="#020332", fg="white")
         self.current_session_label.pack(pady=(20, 20))  # Padding around current session
 
-        self.current_timer_label = tk.Label(self.frame, text="", font=("Courier", letra_time), fg='red', bg="#020332")
+        self.current_timer_label = tk.Label(self.frame, text="", font=self.font_time, fg='red', bg="#020332")
         self.current_timer_label.pack(pady=10)  # Padding around timer
 
-        self.next_session_label = tk.Label(self.frame, text="", font=("Courier", letra_next), bg="#020332", fg="white")
-        self.next_session_label.pack(pady=(100, 20))  # Padding around next session
+        self.next_session_label = tk.Label(self.frame, text="", font=self.font_next, bg="#020332", fg="white")
+        self.next_session_label.pack(pady=(space_on_top, 20))  # Padding around next session
 
         # Small status line to confirm agenda reloads
-        self.status_label = tk.Label(self.frame, text="", font=("Courier", 14), bg="#020332", fg="gray")
+        self.status_label = tk.Label(self.frame, text="", font=self.font_status, bg="#020332", fg="gray")
         self.status_label.pack(pady=(10, 0))
         self.status_job = None
 
         # Bind Ctrl+U (plus Cmd+R and F5 on macOS) to update agenda
         for key in ("<Control-u>", "<Control-U>", "<Command-r>", "<Command-R>", "<F5>"):
             self.master.bind(key, self.update_agenda)
+
+        # Bind Cmd/Ctrl + / - / 0 to grow, shrink and reset the font scale
+        for mod in ("Command", "Control"):
+            for key in ("plus", "equal", "KP_Add"):
+                self.master.bind(f"<{mod}-{key}>", lambda e: self.set_scale(self.scale * 1.1))
+            for key in ("minus", "KP_Subtract"):
+                self.master.bind(f"<{mod}-{key}>", lambda e: self.set_scale(self.scale / 1.1))
+            self.master.bind(f"<{mod}-0>", lambda e: self.set_scale(font_scale))
+
+        self.apply_scale()
 
         # Take keyboard focus so the shortcuts work without clicking the window first
         self.master.lift()
@@ -80,6 +103,19 @@ class SeminarTracker:
         self.current_session_index = 0
         self.update_session()
         self.show_status(f"Agenda reloaded at {datetime.now().strftime('%H:%M:%S')}", "gray")
+
+    def apply_scale(self):
+        """Resize all fonts and spacing according to the current scale."""
+        for font, size in ((self.font_current, letra_current), (self.font_time, letra_time),
+                           (self.font_time2, letra_time2), (self.font_next, letra_next),
+                           (self.font_status, letra_status)):
+            font.configure(size=max(1, round(size * self.scale)))
+        self.next_session_label.pack_configure(pady=(round(space_on_top * self.scale), 20))
+
+    def set_scale(self, scale):
+        self.scale = min(5.0, max(0.3, scale))
+        self.apply_scale()
+        self.show_status(f"Font scale: {self.scale:.2f}", "gray")
 
     def show_status(self, text, color):
         """Show a status message for a few seconds."""
@@ -161,14 +197,14 @@ class SeminarTracker:
         """Turn panic blinking on or off, starting at most one blink loop."""
         if on and not self.blinking:
             self.blinking = True
-            self.current_timer_label.config(font=("Courier", letra_time2), fg='yellow')
+            self.current_timer_label.config(font=self.font_time2, fg='yellow')
             self.blink_job = self.master.after(500, self.blink_text)
         elif not on:
             self.blinking = False
             if self.blink_job is not None:
                 self.master.after_cancel(self.blink_job)
                 self.blink_job = None
-            self.current_timer_label.config(font=("Courier", letra_time), fg='red')
+            self.current_timer_label.config(font=self.font_time, fg='red')
 
     def blink_text(self):
         if self.blinking:
