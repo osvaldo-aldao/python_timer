@@ -263,11 +263,14 @@ class SeminarTracker:
                      fg=agenda_header_color, anchor="w").grid(row=0, column=column, sticky="ew", padx=6, pady=(0, 8))
 
         for i, session in enumerate(self.agenda.itertuples()):
+            # Thin line above each session to keep them apart
+            tk.Frame(self.agenda_table, bg=divider_color, height=1).grid(row=2 * i + 1, column=0, columnspan=3,
+                                                                       sticky="ew")
             cells = [tk.Label(self.agenda_table, text=text, font=self.font_agenda, bg=bg_color, fg="white",
                               anchor="w", justify="left")
                      for text in (session.start_time.strftime('%H:%M'), session.session_name, session.speaker_name)]
             for column, cell in enumerate(cells):
-                cell.grid(row=i + 1, column=column, sticky="nsew", padx=6, pady=2, ipady=2)
+                cell.grid(row=2 * i + 2, column=column, sticky="nsew", padx=6, pady=4, ipady=4)
             self.agenda_rows.append(cells)
 
         self.agenda_table.grid_columnconfigure(1, weight=1)
