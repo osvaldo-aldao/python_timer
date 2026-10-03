@@ -24,11 +24,12 @@ font_scale = 1.0
 settings_file = Path(__file__).with_name("timer_settings.json")
 letra_current = 30
 letra_time = 70
-letra_time2 = 100
+letra_time2 = 90
 letra_next = 24
 letra_status = 14
 space_on_top = 100
-pannic_time = 1  # time in minutes
+pannic_time = 3  # time in minutes
+title_color = "#2EC4B6"  # Teal for the Current / Next / Start / End titles
 
 # Guide printed in the terminal at start
 instructions = """
@@ -51,6 +52,53 @@ Shortcuts                     Mac                 PC
     Panic timer on / off      P
     Start the real timer      Enter
 """
+
+class SessionInfo(tk.Frame):
+    """Session name, speaker and times, with the titles shown in title_color."""
+
+    def __init__(self, master, font, wrap_width):
+        super().__init__(master, bg="#020332")
+        self.font = font
+        self.wrap_width = wrap_width
+
+        self.name_row = tk.Frame(self, bg="#020332")
+        self.name_row.pack()
+        self.prefix_label = self.make_label(self.name_row, title_color)
+        self.name_label = self.make_label(self.name_row, "white")
+        self.name_label.config(justify="center")
+
+        self.times_row = tk.Frame(self, bg="#020332")
+        self.start_title = self.make_label(self.times_row, title_color, "Start: ")
+        self.start_label = self.make_label(self.times_row, "white")
+        self.end_title = self.make_label(self.times_row, title_color, "End: ")
+        self.end_label = self.make_label(self.times_row, "white")
+        for label in (self.start_title, self.start_label, self.end_title, self.end_label):
+            label.pack(side="left")
+
+    def make_label(self, parent, color, text=""):
+        return tk.Label(parent, text=text, font=self.font, bg="#020332", fg=color, padx=0, bd=0)
+
+    def show(self, prefix, session):
+        """Show a session, e.g. "Current: <name> by <speaker>" and its start and end times."""
+        prefix_text = f"{prefix}: "
+        self.prefix_label.config(text=prefix_text)
+        self.name_label.config(text=f"{session['session_name']} by {session['speaker_name']}",
+                               wraplength=max(1, self.wrap_width - self.font.measure(prefix_text)))
+        self.name_label.pack(side="left", anchor="n")
+        # before= keeps the title in front of the name after show_text() has hidden it
+        self.prefix_label.pack(side="left", anchor="n", before=self.name_label)
+        self.start_label.config(text=session['start_time'].strftime('%H:%M') + ", ")
+        self.end_label.config(text=session['end_time'].strftime('%H:%M'))
+        # Small gap above the times, half the font size so it grows with the font scale
+        self.times_row.pack(pady=(self.font.cget("size") // 2, 0))
+
+    def show_text(self, text):
+        """Show a plain message (or nothing) instead of a session."""
+        self.prefix_label.pack_forget()
+        self.times_row.pack_forget()
+        self.name_label.config(text=text, wraplength=self.wrap_width)
+        self.name_label.pack(side="left", anchor="n")
+
 
 class SeminarTracker:
     def __init__(self, master, agenda_file, testing=False):
@@ -77,14 +125,17 @@ class SeminarTracker:
         self.font_next = tkfont.Font(family="Courier")
         self.font_status = tkfont.Font(family="Courier")
 
+        # Wrap long lines so the text never gets wider than the screen
+        wrap_width = self.master.winfo_screenwidth() - 100
+
         # Define labels for current and next session
-        self.current_session_label = tk.Label(self.frame, text="", font=self.font_current, bg="#020332", fg="white")
+        self.current_session_label = SessionInfo(self.frame, self.font_current, wrap_width)
         self.current_session_label.pack(pady=(20, 20))  # Padding around current session
 
         self.current_timer_label = tk.Label(self.frame, text="", font=self.font_time, fg='red', bg="#020332")
         self.current_timer_label.pack(pady=10)  # Padding around timer
 
-        self.next_session_label = tk.Label(self.frame, text="", font=self.font_next, bg="#020332", fg="white")
+        self.next_session_label = SessionInfo(self.frame, self.font_next, wrap_width)
         self.next_session_label.pack(pady=(space_on_top, 20))  # Padding around next session
 
         # Small status line to confirm agenda reloads
@@ -92,10 +143,7 @@ class SeminarTracker:
         self.status_label.pack(pady=(10, 0))
         self.status_job = None
 
-        # Wrap long lines so the text never gets wider than the screen
-        wrap_width = self.master.winfo_screenwidth() - 100
-        for label in (self.current_session_label, self.current_timer_label,
-                      self.next_session_label, self.status_label):
+        for label in (self.current_timer_label, self.status_label):
             label.config(wraplength=wrap_width, justify="center")
 
         # Bind Ctrl+U (plus Cmd+R and F5 on macOS) to update agenda
@@ -219,22 +267,17 @@ class SeminarTracker:
         else:
             self.update_session()
 
-    def session_text(self, prefix, session):
-        start_time = session['start_time'].strftime('%H:%M')
-        end_time = session['end_time'].strftime('%H:%M')
-        return f"{prefix}: {session['session_name']} by {session['speaker_name']}\nStart: {start_time}, End: {end_time}"
-
     def show_test_session(self):
         """Show one session as if it were running, with its full length on the timer."""
         session = self.agenda.iloc[self.test_index]
-        self.current_session_label.config(text=self.session_text("Current", session))
+        self.current_session_label.show("Current", session)
         minutes, seconds = divmod(int((session['end_time'] - session['start_time']).total_seconds()), 60)
         self.current_timer_label.config(text=f"{minutes:02}:{seconds:02} remaining")
         self.set_blinking(self.test_panic)
         if self.test_index + 1 < len(self.agenda):
-            self.next_session_label.config(text=self.session_text("Next", self.agenda.iloc[self.test_index + 1]))
+            self.next_session_label.show("Next", self.agenda.iloc[self.test_index + 1])
         else:
-            self.next_session_label.config(text="End of Seminar")
+            self.next_session_label.show_text("End of Seminar")
         if self.status_job is None:
             self.clear_status()
 
@@ -275,16 +318,16 @@ class SeminarTracker:
         if self.current_session_index >= len(self.agenda):
             # End of the seminar
             self.set_blinking(False)
-            self.current_session_label.config(text="Seminar is over")
+            self.current_session_label.show_text("Seminar is over")
             self.current_timer_label.config(text="")
-            self.next_session_label.config(text="")
+            self.next_session_label.show_text("")
             return
 
         current_session = self.agenda.iloc[self.current_session_index]
         next_session = self.agenda.iloc[self.current_session_index + 1] if self.current_session_index + 1 < len(self.agenda) else None
 
         # Update the current session information
-        self.current_session_label.config(text=self.session_text("Current", current_session))
+        self.current_session_label.show("Current", current_session)
 
         # Calculate remaining time until the session starts
         start_time_with_date = datetime.combine(now.date(), current_session['start_time'].time())
@@ -297,7 +340,7 @@ class SeminarTracker:
             self.current_timer_label.config(text=f"Starts in: {minutes:02}:{seconds:02}")
 
             # Clear next session label while waiting for current session to start
-            self.next_session_label.config(text="")
+            self.next_session_label.show_text("")
         else:
             # Session ongoing, calculate remaining time
             remaining_time = end_time_with_date - now
@@ -311,9 +354,9 @@ class SeminarTracker:
 
             # Show next session
             if next_session is not None:
-                self.next_session_label.config(text=self.session_text("Next", next_session))
+                self.next_session_label.show("Next", next_session)
             else:
-                self.next_session_label.config(text="End of Seminar")
+                self.next_session_label.show_text("End of Seminar")
 
     def set_blinking(self, on):
         """Turn panic blinking on or off, starting at most one blink loop."""
