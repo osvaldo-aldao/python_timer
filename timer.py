@@ -1,6 +1,9 @@
+import json
+import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from datetime import datetime
+from pathlib import Path
 import pandas as pd
 
 # Font sizes for labels
@@ -11,7 +14,14 @@ import pandas as pd
 # space_on_top = 300
 # Change font_scale to fit the screen (e.g. 0.8 for a laptop, 3 for a big display).
 # At runtime: Cmd/Ctrl + and Cmd/Ctrl - to resize, Cmd/Ctrl 0 to go back to font_scale.
+# The size you pick is saved to timer_settings.json and reused next time.
+#
+# Test mode, to find the best size before the event: `python timer.py --test`
+#   Up / Down (or Left / Right)  step through the sessions
+#   P                            show the bigger blinking panic timer
+#   Enter                        leave test mode and start the real timer
 font_scale = 1.0
+settings_file = Path(__file__).with_name("timer_settings.json")
 letra_current = 30
 letra_time = 70
 letra_time2 = 100
@@ -20,8 +30,30 @@ letra_status = 14
 space_on_top = 100
 pannic_time = 1  # time in minutes
 
+# Guide printed in the terminal at start
+instructions = """
+Enea Tech Summit Session Tracker
+Mode: {mode}   |   Font scale: {scale:.2f}   |   Agenda: {agenda} ({sessions} sessions)
+
+Flow
+  1. Before the event, start in test mode:  python timer.py --test
+  2. Step through every session with Up / Down and resize until all text fits.
+     Press P to check the bigger blinking panic timer too.
+  3. Press Enter to leave test mode and start the real timer.
+  4. The size is saved: next time just run  python timer.py
+
+Shortcuts                     Mac                 PC
+  Font bigger / smaller       Cmd + / Cmd -       Ctrl + / Ctrl -
+  Font back to default        Cmd 0               Ctrl 0
+  Reload agenda               Cmd R or F5         Ctrl U or F5
+  Test mode only:
+    Previous / next session   Up / Down (or Left / Right)
+    Panic timer on / off      P
+    Start the real timer      Enter
+"""
+
 class SeminarTracker:
-    def __init__(self, master, agenda_file):
+    def __init__(self, master, agenda_file, testing=False):
         self.master = master
         self.agenda_file = agenda_file
         self.master.title("Enea Tech Summit Session Tracker")
@@ -38,7 +70,7 @@ class SeminarTracker:
         #self.master.overrideredirect(True)  # Removes the title bar for a cleaner look
 
         # Shared fonts, so resizing them updates every label at once
-        self.scale = font_scale
+        self.scale = self.load_saved_scale()
         self.font_current = tkfont.Font(family="Courier")
         self.font_time = tkfont.Font(family="Courier")
         self.font_time2 = tkfont.Font(family="Courier")
@@ -78,6 +110,16 @@ class SeminarTracker:
                 self.master.bind(f"<{mod}-{key}>", lambda e: self.set_scale(self.scale / 1.1))
             self.master.bind(f"<{mod}-0>", lambda e: self.set_scale(font_scale))
 
+        # Test mode keys: step through sessions, preview panic, Enter starts the real timer
+        for key in ("<Up>", "<Left>"):
+            self.master.bind(key, lambda e: self.step_test_session(-1))
+        for key in ("<Down>", "<Right>"):
+            self.master.bind(key, lambda e: self.step_test_session(1))
+        for key in ("<p>", "<P>"):
+            self.master.bind(key, self.toggle_test_panic)
+        for key in ("<Return>", "<KP_Enter>"):
+            self.master.bind(key, self.end_test_mode)
+
         self.apply_scale()
 
         # Take keyboard focus so the shortcuts work without clicking the window first
@@ -87,8 +129,12 @@ class SeminarTracker:
         self.current_session_index = 0
         self.blinking = False  # Control blinking state
         self.blink_job = None  # Pending blink callback, so it can be cancelled
+        self.testing = testing
+        self.test_index = 0  # Session shown in test mode
+        self.test_panic = False  # Show the panic timer in test mode
 
         self.load_agenda()
+        self.print_instructions()
         self.tick()
 
     def load_agenda(self):
@@ -96,6 +142,9 @@ class SeminarTracker:
         agenda = pd.read_excel(self.agenda_file)
         agenda['start_time'] = pd.to_datetime(agenda['start_time'], format='%H:%M:%S')
         agenda['end_time'] = pd.to_datetime(agenda['end_time'], format='%H:%M:%S')
+        # Remove stray spaces around names, and show empty cells as blank instead of "nan"
+        for column in ('session_name', 'speaker_name'):
+            agenda[column] = agenda[column].fillna("").astype(str).str.strip()
         self.agenda = agenda
 
     def update_agenda(self, event=None):
@@ -107,7 +156,8 @@ class SeminarTracker:
             self.show_status(f"Reload failed: {e}", "orange")
             return
         self.current_session_index = 0
-        self.update_session()
+        self.test_index = min(self.test_index, len(self.agenda) - 1)
+        self.refresh()
         self.show_status(f"Agenda reloaded at {datetime.now().strftime('%H:%M:%S')}", "gray")
 
     def apply_scale(self):
@@ -118,9 +168,24 @@ class SeminarTracker:
             font.configure(size=max(1, round(size * self.scale)))
         self.next_session_label.pack_configure(pady=(round(space_on_top * self.scale), 20))
 
+    def load_saved_scale(self):
+        """Return the font scale saved last time, or font_scale if there is none."""
+        try:
+            return float(json.loads(settings_file.read_text())["font_scale"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return font_scale
+
+    def save_scale(self):
+        """Remember the font scale for the next start."""
+        try:
+            settings_file.write_text(json.dumps({"font_scale": round(self.scale, 3)}, indent=2))
+        except OSError as e:
+            print(f"Could not save settings: {e}")
+
     def set_scale(self, scale):
         self.scale = min(5.0, max(0.3, scale))
         self.apply_scale()
+        self.save_scale()
         self.show_status(f"Font scale: {self.scale:.2f}", "gray")
 
     def show_status(self, text, color):
@@ -128,14 +193,74 @@ class SeminarTracker:
         if self.status_job is not None:
             self.master.after_cancel(self.status_job)
         self.status_label.config(text=text, fg=color)
-        self.status_job = self.master.after(4000, lambda: self.status_label.config(text=""))
+        self.status_job = self.master.after(4000, self.clear_status)
+
+    def clear_status(self):
+        """Hide the status message, or go back to the test mode hint."""
+        self.status_job = None
+        if self.testing:
+            self.status_label.config(
+                text=f"TEST MODE - session {self.test_index + 1}/{len(self.agenda)} - "
+                     "Up/Down: change session, P: panic timer, Enter: start the timer",
+                fg="orange")
+        else:
+            self.status_label.config(text="")
 
     def tick(self):
         """Refresh the display once per second for as long as the app runs."""
         try:
-            self.update_session()
+            self.refresh()
         finally:
             self.master.after(1000, self.tick)
+
+    def refresh(self):
+        if self.testing:
+            self.show_test_session()
+        else:
+            self.update_session()
+
+    def session_text(self, prefix, session):
+        start_time = session['start_time'].strftime('%H:%M')
+        end_time = session['end_time'].strftime('%H:%M')
+        return f"{prefix}: {session['session_name']} by {session['speaker_name']}\nStart: {start_time}, End: {end_time}"
+
+    def show_test_session(self):
+        """Show one session as if it were running, with its full length on the timer."""
+        session = self.agenda.iloc[self.test_index]
+        self.current_session_label.config(text=self.session_text("Current", session))
+        minutes, seconds = divmod(int((session['end_time'] - session['start_time']).total_seconds()), 60)
+        self.current_timer_label.config(text=f"{minutes:02}:{seconds:02} remaining")
+        self.set_blinking(self.test_panic)
+        if self.test_index + 1 < len(self.agenda):
+            self.next_session_label.config(text=self.session_text("Next", self.agenda.iloc[self.test_index + 1]))
+        else:
+            self.next_session_label.config(text="End of Seminar")
+        if self.status_job is None:
+            self.clear_status()
+
+    def step_test_session(self, step):
+        if self.testing:
+            self.test_index = (self.test_index + step) % len(self.agenda)
+            self.show_test_session()
+
+    def toggle_test_panic(self, event=None):
+        if self.testing:
+            self.test_panic = not self.test_panic
+            self.show_test_session()
+
+    def print_instructions(self):
+        print(instructions.format(mode="TEST" if self.testing else "RUNNING", scale=self.scale,
+                                  agenda=self.agenda_file, sessions=len(self.agenda)), flush=True)
+
+    def end_test_mode(self, event=None):
+        if self.testing:
+            print(f"Test mode off, timer running with font scale {self.scale:.2f} (saved for next time)", flush=True)
+            self.testing = False
+            self.test_panic = False
+            self.set_blinking(False)
+            self.current_session_index = 0
+            self.update_session()
+            self.show_status(f"Test mode off, timer running (font scale {self.scale:.2f})", "gray")
 
     def update_session(self):
         now = datetime.now()  # Keep the actual time with seconds and microseconds
@@ -158,14 +283,8 @@ class SeminarTracker:
         current_session = self.agenda.iloc[self.current_session_index]
         next_session = self.agenda.iloc[self.current_session_index + 1] if self.current_session_index + 1 < len(self.agenda) else None
 
-        # Display start and end times without seconds
-        start_time = current_session['start_time'].strftime('%H:%M')
-        end_time = current_session['end_time'].strftime('%H:%M')
-        session_name = current_session['session_name']
-        speaker_name = current_session['speaker_name']
-
         # Update the current session information
-        self.current_session_label.config(text=f"Current: {session_name} by {speaker_name}\nStart: {start_time}, End: {end_time}")
+        self.current_session_label.config(text=self.session_text("Current", current_session))
 
         # Calculate remaining time until the session starts
         start_time_with_date = datetime.combine(now.date(), current_session['start_time'].time())
@@ -192,10 +311,7 @@ class SeminarTracker:
 
             # Show next session
             if next_session is not None:
-                next_start_time = next_session['start_time'].strftime('%H:%M')
-                next_end_time = next_session['end_time'].strftime('%H:%M')
-                next_session_text = f"Next: {next_session['session_name']} by {next_session['speaker_name']}\nStart: {next_start_time}, End: {next_end_time}"
-                self.next_session_label.config(text=next_session_text)
+                self.next_session_label.config(text=self.session_text("Next", next_session))
             else:
                 self.next_session_label.config(text="End of Seminar")
 
@@ -224,5 +340,5 @@ class SeminarTracker:
 # Load the agenda CSV and start the application
 if __name__ == "__main__":
     root = tk.Tk()
-    app = SeminarTracker(root, "agenda.xlsx")  # Replace with your actual file path
+    app = SeminarTracker(root, "agenda.xlsx", testing="--test" in sys.argv[1:])
     root.mainloop()
